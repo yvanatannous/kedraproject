@@ -1,0 +1,83 @@
+scheduler:
+  module: dagster.core.scheduler
+  class: DagsterDaemonScheduler
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 5
+
+run_launcher:
+  module: dagster_docker
+  class: DockerRunLauncher
+  config:
+    # These values are copied from the daemon into each ephemeral run
+    # container. The run image still uses Compose DNS names on kedra_network.
+    env_vars:
+      - DAGSTER_POSTGRES_USER
+      - DAGSTER_POSTGRES_PASSWORD
+      - DAGSTER_POSTGRES_DB
+      - DAGSTER_POSTGRES_HOST
+      - MONGO_URI
+      - MONGO_DATABASE
+      - MONGO_COLLECTION
+      - MONGO_CURATED_COLLECTION
+      - MINIO_ENDPOINT
+      - MINIO_ACCESS_KEY
+      - MINIO_SECRET_KEY
+      - MINIO_BUCKET
+      - MINIO_CURATED_BUCKET
+      - MINIO_REGION
+      - DISABLE_SCRAPY_LOGS
+      - PARTITION_SIZE
+    network: kedra_network
+    container_kwargs:
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - kedra_dagster_io_storage:/tmp/io_manager_storage
+
+run_storage:
+  module: dagster_postgres.run_storage
+  class: PostgresRunStorage
+  config:
+    postgres_db:
+      hostname:
+        env: DAGSTER_POSTGRES_HOST
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432
+
+schedule_storage:
+  module: dagster_postgres.schedule_storage
+  class: PostgresScheduleStorage
+  config:
+    postgres_db:
+      hostname:
+        env: DAGSTER_POSTGRES_HOST
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432
+
+event_log_storage:
+  module: dagster_postgres.event_log
+  class: PostgresEventLogStorage
+  config:
+    postgres_db:
+      hostname:
+        env: DAGSTER_POSTGRES_HOST
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432

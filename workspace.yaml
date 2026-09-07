@@ -1,0 +1,7 @@
+load_from:
+  # This host is the Compose service exposing the repository's sole Dagster
+  # code location over gRPC.
+  - grpc_server:
+      host: kedra_user_code
+      port: 4000
+      location_name: kedra_pipeline

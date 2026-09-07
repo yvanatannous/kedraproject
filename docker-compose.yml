@@ -1,0 +1,197 @@
+# Keep the existing Compose project name so current MongoDB and MinIO named
+# volumes remain attached after adding Dagster services.
+name: kedra-workflow
+
+x-dagster-environment: &dagster-environment
+  DAGSTER_POSTGRES_USER: "${DAGSTER_POSTGRES_USER:-dagster}"
+  DAGSTER_POSTGRES_PASSWORD: "${DAGSTER_POSTGRES_PASSWORD:-dagster}"
+  DAGSTER_POSTGRES_DB: "${DAGSTER_POSTGRES_DB:-dagster}"
+  DAGSTER_POSTGRES_HOST: "${DAGSTER_POSTGRES_HOST:-dagster_postgresql}"
+
+x-kedra-run-environment: &kedra-run-environment
+  <<: *dagster-environment
+  MONGO_URI: "${MONGO_URI:-mongodb://mongodb:27017}"
+  MONGO_DATABASE: "${MONGO_DATABASE:-kedrascraper}"
+  MONGO_COLLECTION: "${MONGO_COLLECTION:-decisions}"
+  MONGO_CURATED_COLLECTION: "${MONGO_CURATED_COLLECTION:-decisions_curated}"
+  MINIO_ENDPOINT: "${MINIO_ENDPOINT:-http://minio:9000}"
+  MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-minioadmin}"
+  MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+  MINIO_BUCKET: "${MINIO_BUCKET:-decisions}"
+  MINIO_CURATED_BUCKET: "${MINIO_CURATED_BUCKET:-curated}"
+  MINIO_REGION: "${MINIO_REGION:-us-east-1}"
+  DISABLE_SCRAPY_LOGS: "${DISABLE_SCRAPY_LOGS:-false}"
+  PARTITION_SIZE: "${PARTITION_SIZE:-1m}"
+
+services:
+  # Dagster's run, schedule/sensor, and event-log storage.
+  dagster_postgresql:
+    image: postgres:11
+    container_name: kedra-dagster-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${DAGSTER_POSTGRES_USER:-dagster}"
+      POSTGRES_PASSWORD: "${DAGSTER_POSTGRES_PASSWORD:-dagster}"
+      POSTGRES_DB: "${DAGSTER_POSTGRES_DB:-dagster}"
+    volumes:
+      - dagster_postgres_data:/var/lib/postgresql/data
+    networks:
+      - kedra_network
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${DAGSTER_POSTGRES_USER:-dagster}" -d "${DAGSTER_POSTGRES_DB:-dagster}"
+      interval: 10s
+      timeout: 8s
+      retries: 5
+
+  # Landing and curated metadata storage.
+  mongodb:
+    image: mongo:7
+    container_name: kedrascraper-mongo
+    restart: unless-stopped
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - kedra_network
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - db.adminCommand('ping').ok
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Landing and curated object storage.
+  minio:
+    image: minio/minio
+    container_name: kedrascraper-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+    volumes:
+      - minio_data:/data
+    networks:
+      - kedra_network
+
+  # Provision both buckets once MinIO accepts connections.
+  createbuckets:
+    image: minio/mc
+    container_name: kedrascraper-createbuckets
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-decisions}"
+      MINIO_CURATED_BUCKET: "${MINIO_CURATED_BUCKET:-curated}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until /usr/bin/mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          echo 'waiting for minio...'
+          sleep 1
+        done
+        /usr/bin/mc mb --ignore-existing "local/$${MINIO_BUCKET}"
+        /usr/bin/mc mb --ignore-existing "local/$${MINIO_CURATED_BUCKET}"
+    networks:
+      - kedra_network
+
+  # The one Dagster code location. Its image contains both the orchestration
+  # package and the Scrapy application, and is reused for every launched run.
+  kedra_user_code:
+    build:
+      context: .
+      dockerfile: Dockerfile.UserCode
+    image: "${DAGSTER_USER_CODE_IMAGE:-kedra_user_code_image}"
+    container_name: kedra-user-code
+    restart: always
+    environment:
+      DAGSTER_CURRENT_IMAGE: "${DAGSTER_USER_CODE_IMAGE:-kedra_user_code_image}"
+    networks:
+      - kedra_network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+
+  # Dagster UI/control API. This image contains configuration but no user code.
+  dagster_webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.Dagster
+    image: "${DAGSTER_HOST_IMAGE:-kedra_dagster_image}"
+    container_name: kedra-dagster-webserver
+    restart: unless-stopped
+    entrypoint:
+      - dagster-webserver
+      - -h
+      - "0.0.0.0"
+      - -p
+      - "3000"
+      - -w
+      - workspace.yaml
+    expose:
+      - "3000"
+    ports:
+      - "${DAGSTER_WEB_PORT:-3000}:3000"
+    environment: *dagster-environment
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dagster_io_storage:/tmp/io_manager_storage
+    networks:
+      - kedra_network
+    depends_on:
+      dagster_postgresql:
+        condition: service_healthy
+      kedra_user_code:
+        condition: service_healthy
+
+  # Dequeues runs and launches each one in its own user-code container.
+  dagster_daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.Dagster
+    image: "${DAGSTER_HOST_IMAGE:-kedra_dagster_image}"
+    container_name: kedra-dagster-daemon
+    restart: on-failure
+    entrypoint:
+      - dagster-daemon
+      - run
+    environment: *kedra-run-environment
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dagster_io_storage:/tmp/io_manager_storage
+    networks:
+      - kedra_network
+    depends_on:
+      dagster_postgresql:
+        condition: service_healthy
+      kedra_user_code:
+        condition: service_started
+
+networks:
+  kedra_network:
+    driver: bridge
+    name: kedra_network
+
+volumes:
+  dagster_postgres_data:
+  mongo_data:
+  minio_data:
+  dagster_io_storage:
+    name: kedra_dagster_io_storage

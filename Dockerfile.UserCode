@@ -1,0 +1,33 @@
+FROM python:3.10-slim
+
+ARG DAGSTER_VERSION=1.13.21
+ARG DAGSTER_LIBRARY_VERSION=0.29.21
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install application dependencies and the libraries required by Dagster's
+# gRPC code server and Docker run launcher before copying source code so this
+# layer remains cacheable when only application code changes.
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir \
+    -r /tmp/requirements.txt \
+    "dagster==${DAGSTER_VERSION}" \
+    "dagster-postgres==${DAGSTER_LIBRARY_VERSION}" \
+    "dagster-docker==${DAGSTER_LIBRARY_VERSION}"
+
+# The orchestration code invokes the Scrapy project as a subprocess, so both
+# applications belong in this code-location/run image.
+WORKDIR /opt/dagster/app
+COPY orchestration/ ./orchestration/
+COPY kedrascraper/ ./kedrascraper/
+
+WORKDIR /opt/dagster/app/orchestration
+
+EXPOSE 4000
+
+HEALTHCHECK --timeout=1s --start-period=3s --interval=3s --retries=20 \
+    CMD ["dagster", "api", "grpc-health-check", "-p", "4000"]
+
+# CMD can be replaced by DockerRunLauncher when this image executes a run.
+CMD ["dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "4000", "-m", "kedra_pipeline.definitions"]

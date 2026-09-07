@@ -1,0 +1,3 @@
+[tool.dagster]
+module_name = "kedra_pipeline.definitions"
+code_location_name = "kedra_pipeline"

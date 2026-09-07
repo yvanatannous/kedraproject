@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.venv
+.vscode
+**/__pycache__
+**/*.py[cod]
+**/*.log
+**/.pytest_cache
+**/.ruff_cache
+kedrascraper/debug_html
+kedrascraper/output.json
+*.pdf
