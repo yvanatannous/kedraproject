@@ -29,14 +29,14 @@ class StoragePipeline:
         pipeline.db_client.stats = crawler.stats
         return pipeline
 
-    def open_spider(self):
-        self.db_client.open()
+    async def open_spider(self):
+        await self.db_client.open()
         self.s3_client.open()
 
-    def close_spider(self):
-        self.db_client.close()
+    async def close_spider(self):
+        await self.db_client.close()
 
-    def process_item(self, item):
+    async def process_item(self, item):
         adapter = ItemAdapter(item)
         title = adapter.get("title")
         link = adapter.get("link")
@@ -53,9 +53,9 @@ class StoragePipeline:
 
         try:
             if file_bytes:
-                self._process_file(adapter, file_bytes, title, link)
+                await self._process_file(adapter, file_bytes, title, link)
 
-            self.db_client.save_to_db(
+            await self.db_client.save_to_db(
                 title, self.db_client.document(adapter), upsert=True
             )
         except Exception as _exc:
@@ -63,11 +63,11 @@ class StoragePipeline:
 
         return item
 
-    def _process_file(self, adapter, file_bytes, title, link):
+    async def _process_file(self, adapter, file_bytes, title, link):
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         adapter["file_hash"] = file_hash
         try:
-            existing = self.db_client.find_one(
+            existing = await self.db_client.find_one(
                 {"title": title},
                 {"_id": 0, "file_hash": 1, "link": 1, "file_path": 1},
             )

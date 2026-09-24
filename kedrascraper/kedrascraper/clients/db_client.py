@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from scrapy.exceptions import DropItem
 
 import pymongo
+from pymongo import AsyncMongoClient
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +18,11 @@ class DbClient:
         self.saved_to_db_keys = set()
         self.duplicate_title_entries = Counter()
 
-    def open(self):
-        self.client = pymongo.MongoClient(self.mongo_uri)
+    async def open(self):
+        self.client = AsyncMongoClient(self.mongo_uri)
         self.collection = self.client[self.mongo_db][self.mongo_collection]
         try:
-            self.collection.create_index("title", unique=True)
+            await self.collection.create_index("title", unique=True)
         except pymongo.errors.OperationFailure as exc:
             # 85/86 = an equivalent 'title' index already exists under another name; anything else is unexpected.
             if exc.code in (85, 86):
@@ -29,15 +30,15 @@ class DbClient:
             else:
                 raise
 
-    def close(self):
-        self.client.close()
+    async def close(self):
+        await self.client.close()
 
-    def find_one(self, query, projection=None):
-        return self.collection.find_one(query, projection)
+    async def find_one(self, query, projection=None):
+        return await self.collection.find_one(query, projection)
 
-    def save_to_db(self, title, document, upsert=False):
+    async def save_to_db(self, title, document, upsert=False):
         try:
-            result = self.collection.update_one(
+            result = await self.collection.update_one(
                 {"title": title},
                 {"$set": document},
                 upsert=upsert,
